@@ -1,0 +1,477 @@
+{
+    "name": "PL_03_Data_Quality_Raw",
+    "properties": {
+        "activities": [
+            {
+                "name": "DQ_Check_Identity",
+                "type": "Script",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "DECLARE @v_NullKeyCount   INT;\nDECLARE @v_InvalidStatus  INT;\nDECLARE @v_UnknownCharger INT;\n\nSELECT @v_NullKeyCount = COUNT(*)\nFROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}'\nAND (charger_id IS NULL OR timestamp IS NULL OR state IS NULL OR city IS NULL);\n\nSELECT @v_InvalidStatus = COUNT(*)\nFROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}'\nAND status NOT IN ('Available', 'Charging', 'Faulted');\n\nSELECT @v_UnknownCharger = COUNT(*)\nFROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}'\nAND charger_id NOT LIKE 'CH[_]%[_]%';\n\nINSERT INTO dbo.dq_validation_results (PipelineName, RunID, TableName, CheckName, Status, FailedRowCount, ExecutionTime)\nVALUES\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','NULL Key Fields',           CASE WHEN @v_NullKeyCount   = 0 THEN 'Passed' ELSE 'Warning' END, @v_NullKeyCount,   GETUTCDATE()),\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Invalid Status Values',     CASE WHEN @v_InvalidStatus  = 0 THEN 'Passed' ELSE 'Warning' END, @v_InvalidStatus,  GETUTCDATE()),\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Unknown Charger ID Format', CASE WHEN @v_UnknownCharger = 0 THEN 'Passed' ELSE 'Warning' END, @v_UnknownCharger, GETUTCDATE());",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "DQ_Check_RowCount",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_Identity",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "DECLARE @RowCount INT;\n\nSELECT @RowCount = COUNT(*) FROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}';\n\nINSERT INTO dbo.dq_validation_results (PipelineName, RunID, TableName, CheckName, Status, FailedRowCount, ExecutionTime)\nVALUES ('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Row Count Availability Check',\n    CASE WHEN @RowCount > 0 THEN 'Passed' ELSE 'Warning' END, @RowCount, GETUTCDATE());",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "DQ_Check_Duplicates",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_RowCount",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "DECLARE @DuplicateCount INT;\n\nSELECT @DuplicateCount = COUNT(*) FROM (\n    SELECT charger_id, timestamp, COUNT(*) AS cnt\n    FROM dbo.raw_ev_telemetry\n    WHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}'\n    GROUP BY charger_id, timestamp\n    HAVING COUNT(*) > 1\n) AS dups;\n\nINSERT INTO dbo.dq_validation_results (PipelineName, RunID, TableName, CheckName, Status, FailedRowCount, ExecutionTime)\nVALUES ('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Duplicate Records',\n    CASE WHEN @DuplicateCount = 0 THEN 'Passed' ELSE 'Warning' END, @DuplicateCount, GETUTCDATE());",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "DQ_Check_SensorNullRates",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_Duplicates",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "DECLARE @TotalRows       INT;\nDECLARE @BillingNullRate DECIMAL(5,2);\nDECLARE @ThermalNullRate DECIMAL(5,2);\nDECLARE @AllPhaseNull    INT;\nDECLARE @UserNullRate    DECIMAL(5,2);\nDECLARE @BMSNullRate     DECIMAL(5,2);\n\nSELECT @TotalRows = COUNT(*) FROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}';\n\nSELECT @BillingNullRate = CAST(COUNT(CASE WHEN electricity_cost_inr IS NULL THEN 1 END) AS DECIMAL) / NULLIF(@TotalRows,0) * 100\nFROM dbo.raw_ev_telemetry WHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}';\n\nSELECT @ThermalNullRate = CAST(COUNT(CASE WHEN connector_temp_c IS NULL THEN 1 END) AS DECIMAL) / NULLIF(@TotalRows,0) * 100\nFROM dbo.raw_ev_telemetry WHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}';\n\nSELECT @AllPhaseNull = COUNT(*) FROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}'\nAND current_phase_a_a IS NULL AND current_phase_b_a IS NULL AND current_phase_c_a IS NULL;\n\nSELECT @UserNullRate = CAST(COUNT(CASE WHEN user_id IS NULL THEN 1 END) AS DECIMAL) / NULLIF(COUNT(*),0) * 100\nFROM dbo.raw_ev_telemetry WHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}' AND status = 'Charging';\n\nSELECT @BMSNullRate = CAST(COUNT(CASE WHEN initial_soc_pct IS NULL AND user_id IS NOT NULL THEN 1 END) AS DECIMAL) / NULLIF(COUNT(CASE WHEN user_id IS NOT NULL THEN 1 END),0) * 100\nFROM dbo.raw_ev_telemetry WHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}';\n\nINSERT INTO dbo.dq_validation_results (PipelineName, RunID, TableName, CheckName, Status, FailedRowCount, ExecutionTime)\nVALUES\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Billing NULL Rate',          CASE WHEN @BillingNullRate <= 25 THEN 'Passed' ELSE 'Warning' END, CAST(@BillingNullRate AS INT), GETUTCDATE()),\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Thermal Sensor NULL Rate',   CASE WHEN @ThermalNullRate <= 15 THEN 'Passed' ELSE 'Warning' END, CAST(@ThermalNullRate AS INT), GETUTCDATE()),\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','All Phase Current NULL',     CASE WHEN @AllPhaseNull = 0     THEN 'Passed' ELSE 'Warning'  END, @AllPhaseNull,                GETUTCDATE()),\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','User ID NULL During Charge', CASE WHEN @UserNullRate <= 15   THEN 'Passed' ELSE 'Warning'  END, CAST(@UserNullRate AS INT),    GETUTCDATE()),\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','BMS SOC NULL Rate',          CASE WHEN @BMSNullRate <= 12    THEN 'Passed' ELSE 'Warning'  END, CAST(@BMSNullRate AS INT),     GETUTCDATE());",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "DQ_Check_ValueRanges",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_SensorNullRates",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "DECLARE @VoltageOutliers INT;\nDECLARE @UptimeOutliers  INT;\nDECLARE @NegativeRevenue INT;\n\nSELECT @VoltageOutliers = COUNT(*) FROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}'\nAND (voltage_phase_a_v < 300 OR voltage_phase_a_v > 450\n  OR voltage_phase_b_v < 300 OR voltage_phase_b_v > 450\n  OR voltage_phase_c_v < 300 OR voltage_phase_c_v > 450);\n\nSELECT @UptimeOutliers = COUNT(*) FROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}'\nAND (uptime_pct < 0 OR uptime_pct > 100);\n\nSELECT @NegativeRevenue = COUNT(*) FROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}'\nAND (session_revenue_inr < 0 OR energy_delivered_kwh < 0);\n\nINSERT INTO dbo.dq_validation_results (PipelineName, RunID, TableName, CheckName, Status, FailedRowCount, ExecutionTime)\nVALUES\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Voltage Out of Range',    CASE WHEN @VoltageOutliers = 0 THEN 'Passed' ELSE 'Warning' END, @VoltageOutliers, GETUTCDATE()),\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Uptime Out of Range',     CASE WHEN @UptimeOutliers  = 0 THEN 'Passed' ELSE 'Warning' END, @UptimeOutliers,  GETUTCDATE()),\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Negative Revenue/Energy', CASE WHEN @NegativeRevenue = 0 THEN 'Passed' ELSE 'Warning' END, @NegativeRevenue, GETUTCDATE());",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "DQ_Check_BusinessRules",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_ValueRanges",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "DECLARE @FaultedNoCode    INT;\nDECLARE @ChargingNoEnergy INT;\n\nSELECT @FaultedNoCode = COUNT(*) FROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}'\nAND status = 'Faulted' AND (error_code IS NULL OR error_code = 'None');\n\nSELECT @ChargingNoEnergy = COUNT(*) FROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}'\nAND status = 'Charging' AND energy_delivered_kwh < 0;\n\nINSERT INTO dbo.dq_validation_results (PipelineName, RunID, TableName, CheckName, Status, FailedRowCount, ExecutionTime)\nVALUES\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Faulted Row Missing Error Code', CASE WHEN @FaultedNoCode    = 0 THEN 'Passed' ELSE 'Warning' END, @FaultedNoCode,    GETUTCDATE()),\n('@{pipeline().Pipeline}','@{pipeline().RunId}','raw_ev_telemetry','Charging Row Negative Energy',   CASE WHEN @ChargingNoEnergy = 0 THEN 'Passed' ELSE 'Warning'  END, @ChargingNoEnergy, GETUTCDATE());",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_All_DQ_Passed",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_BusinessRules",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}', '@{pipeline().RunId}', 'Success',\n    'All 6 DQ check groups passed for raw_ev_telemetry on @{pipeline().parameters.pipeline_date}.',\n    GETUTCDATE(), CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0, 'raw_ev_telemetry', 'dq_validation_results', 'Raw-DQ'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Failed_Identity",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_Identity",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}', '@{pipeline().RunId}', 'Failed',\n    'DQ check failed: Identity and Status Checks for @{pipeline().parameters.pipeline_date}. See dq_validation_results for details.',\n    GETUTCDATE(), CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0, 'raw_ev_telemetry', 'dq_validation_results', 'Raw-DQ'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Failed_RowCount",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_RowCount",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}', '@{pipeline().RunId}', 'Failed',\n    'DQ check failed: Row Count Validation for @{pipeline().parameters.pipeline_date}. See dq_validation_results for details.',\n    GETUTCDATE(), CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0, 'raw_ev_telemetry', 'dq_validation_results', 'Raw-DQ'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Failed_Duplicates",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_Duplicates",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}', '@{pipeline().RunId}', 'Failed',\n    'DQ check failed: Duplicate Record Check for @{pipeline().parameters.pipeline_date}. See dq_validation_results for details.',\n    GETUTCDATE(), CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0, 'raw_ev_telemetry', 'dq_validation_results', 'Raw-DQ'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Failed_SensorNullRates",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_SensorNullRates",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}', '@{pipeline().RunId}', 'Failed',\n    'DQ check failed: Sensor NULL Rate Checks for @{pipeline().parameters.pipeline_date}. See dq_validation_results for details.',\n    GETUTCDATE(), CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0, 'raw_ev_telemetry', 'dq_validation_results', 'Raw-DQ'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Failed_ValueRanges",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_ValueRanges",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}', '@{pipeline().RunId}', 'Failed',\n    'DQ check failed: Value Range Checks for @{pipeline().parameters.pipeline_date}. See dq_validation_results for details.',\n    GETUTCDATE(), CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0, 'raw_ev_telemetry', 'dq_validation_results', 'Raw-DQ'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Failed_BusinessRules",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DQ_Check_BusinessRules",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}', '@{pipeline().RunId}', 'Failed',\n    'DQ check failed: Business Rule Checks for @{pipeline().parameters.pipeline_date}. See dq_validation_results for details.',\n    GETUTCDATE(), CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0, 'raw_ev_telemetry', 'dq_validation_results', 'Raw-DQ'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            }
+        ],
+        "parameters": {
+            "pipeline_date": {
+                "type": "string",
+                "defaultValue": "@formatDateTime(adddays(utcnow(), -1), 'yyyy-MM-dd')"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-05-26T17:15:09Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}

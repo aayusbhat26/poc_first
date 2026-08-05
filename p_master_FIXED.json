@@ -1,0 +1,365 @@
+{
+    "name": "PL_00_Master_Orchestration",
+    "properties": {
+        "activities": [
+            {
+                "name": "Set_Pipeline_Date",
+                "type": "SetVariable",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "v_pipeline_date",
+                    "value": {
+                        "value": "@if(empty(pipeline().parameters.pipeline_date), formatDateTime(adddays(utcnow(), -1), 'yyyy-MM-dd'), pipeline().parameters.pipeline_date)",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Run_PL01_Raw_Ingestion",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "Set_Pipeline_Date",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "PL_01_Raw_Ingestion",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "pipeline_date": {
+                            "value": "@variables('v_pipeline_date')",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "Run_PL03_Data_Quality",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "Run_PL01_Raw_Ingestion",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "PL_03_Data_Quality_Raw",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "pipeline_date": {
+                            "value": "@variables('v_pipeline_date')",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "Run_PL02_Raw_To_Staging",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "Run_PL03_Data_Quality",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "PL_02_Raw_To_Staging",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "pipeline_date": {
+                            "value": "@variables('v_pipeline_date')",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "Run_PL05_Staging_To_Silver",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "Run_PL02_Raw_To_Staging",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "PL_05_Staging_To_Silver",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "pipeline_date": {
+                            "value": "@variables('v_pipeline_date')",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "Run_PL06_Silver_To_Gold_Exceptions",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "Run_PL05_Staging_To_Silver",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "PL_06_Silver_To_Gold_Exceptions",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "pipeline_date": {
+                            "value": "@variables('v_pipeline_date')",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "Run_PL04_Exception_Handling",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "Run_PL06_Silver_To_Gold_Exceptions",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "PL_04_Exception_Handling",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "pipeline_date": {
+                            "value": "@variables('v_pipeline_date')",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "Get_Distinct_Dates_From_Silver",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "Run_PL05_Staging_To_Silver",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": "SELECT DISTINCT CAST(timestamp AS DATE) AS pipeline_date FROM dbo.silver_ev_operations ORDER BY pipeline_date",
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_Sink_EV_SQL",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": false
+                }
+            },
+            {
+                "name": "ForEach_Date_Run_PL07",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "Get_Distinct_Dates_From_Silver",
+                        "dependencyConditions": ["Succeeded"]
+                    },
+                    {
+                        "activity": "Run_PL04_Exception_Handling",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('Get_Distinct_Dates_From_Silver').output.value",
+                        "type": "Expression"
+                    },
+                    "isSequential": false,
+                    "batchCount": 5,
+                    "activities": [
+                        {
+                            "name": "Run_PL07_For_Date",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_07_Silver_To_Gold_KPIs",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "pipeline_date": {
+                                        "value": "@formatDateTime(item().pipeline_date, 'yyyy-MM-dd')",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "Run_PL08_Dashboard_Refresh",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "ForEach_Date_Run_PL07",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "PL_08_Dashboard_Refresh",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "Log_Master_Success",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "Run_PL08_Dashboard_Refresh",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Success',\n    'Master orchestration completed successfully. All pipelines executed successfully including PL_07 loop and PL_08.',\n    GETUTCDATE(),\n    CAST('@{variables(''v_pipeline_date'')}' AS DATE),\n    0,\n    'ADLS_Landing',\n    'gold_kpi_tables',\n    'Master'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Master_Failure",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "Run_PL01_Raw_Ingestion",
+                        "dependencyConditions": ["Failed"]
+                    },
+                    {
+                        "activity": "Run_PL03_Data_Quality",
+                        "dependencyConditions": ["Failed", "Skipped"]
+                    },
+                    {
+                        "activity": "Run_PL02_Raw_To_Staging",
+                        "dependencyConditions": ["Failed", "Skipped"]
+                    },
+                    {
+                        "activity": "Run_PL05_Staging_To_Silver",
+                        "dependencyConditions": ["Failed", "Skipped"]
+                    },
+                    {
+                        "activity": "Run_PL06_Silver_To_Gold_Exceptions",
+                        "dependencyConditions": ["Failed", "Skipped"]
+                    },
+                    {
+                        "activity": "Run_PL04_Exception_Handling",
+                        "dependencyConditions": ["Failed", "Skipped"]
+                    },
+                    {
+                        "activity": "ForEach_Date_Run_PL07",
+                        "dependencyConditions": ["Failed", "Skipped"]
+                    },
+                    {
+                        "activity": "Run_PL08_Dashboard_Refresh",
+                        "dependencyConditions": ["Failed", "Skipped"]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Failed',\n    'Master orchestration FAILED. Check child pipeline logs in pipeline_execution_logs and ADF Monitor for details.',\n    GETUTCDATE(),\n    CAST('@{variables(''v_pipeline_date'')}' AS DATE),\n    0,\n    'ADLS_Landing',\n    'silver_ev_operations',\n    'Master'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            }
+        ],
+        "parameters": {
+            "pipeline_date": {
+                "type": "string",
+                "defaultValue": ""
+            }
+        },
+        "variables": {
+            "v_pipeline_date": {
+                "type": "String"
+            }
+        },
+        "annotations": []
+    }
+}

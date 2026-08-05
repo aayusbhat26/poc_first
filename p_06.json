@@ -1,0 +1,123 @@
+{
+    "name": "PL_06_Silver_To_Gold_Exceptions",
+    "properties": {
+        "activities": [
+            {
+                "name": "SP_Load_Gold_Exceptions",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": {
+                            "value": "EXEC dbo.usp_Load_Gold_EV_Exceptions @pipeline_date = '@{pipeline().parameters.pipeline_date}'",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_Sink_EV_SQL",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            },
+            {
+                "name": "Log_Gold_Success",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "SP_Load_Gold_Exceptions",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Success',\n    'Gold exception load completed for @{pipeline().parameters.pipeline_date}. ExceptionRows: @{activity('SP_Load_Gold_Exceptions').output.firstRow.ExceptionRows}, FaultRows: @{activity('SP_Load_Gold_Exceptions').output.firstRow.FaultRows}, PacketDropRows: @{activity('SP_Load_Gold_Exceptions').output.firstRow.PacketDropRows}, SummaryRows: @{activity('SP_Load_Gold_Exceptions').output.firstRow.SummaryRows}, ProfileRows: @{activity('SP_Load_Gold_Exceptions').output.firstRow.ProfileRows}.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    @{activity('SP_Load_Gold_Exceptions').output.firstRow.ExceptionRows},\n    'silver_ev_operations',\n    'gold_ev_exceptions',\n    'Gold'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Gold_Failure",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "SP_Load_Gold_Exceptions",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    },
+                    {
+                        "activity": "Log_Gold_Success",
+                        "dependencyConditions": [
+                            "Failed",
+                            "Skipped"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Failed',\n    'PL_06 failed for @{pipeline().parameters.pipeline_date}. Gold exception tables may be incomplete. Check ADF Monitor for stored procedure errors.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0,\n    'silver_ev_operations',\n    'gold_ev_exceptions',\n    'Gold'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            }
+        ],
+        "parameters": {
+            "pipeline_date": {
+                "type": "string"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-05-26T19:05:19Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}

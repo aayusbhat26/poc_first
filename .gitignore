@@ -1,0 +1,14 @@
+# Environments
+.venv/
+.kiro/
+
+# Generated Data
+ev_data_output/
+
+# Office documents
+*.pptx
+*.xlsx
+*.docx
+
+# Unnecessary screenshots
+Screenshot*.png

@@ -1,0 +1,38 @@
+are we considering all the tables which will be used in reporting tool, as gold table, because i was going through the excel, and i found that we have a gold exception table, so according my use case, i have already mentioned the exceptions, so that data would be stored in that table ?
+
+is it necessary to have the same amount of pipelines that are mentioned in excel, because we can make cover the work of 5 pipelines into 2 without making things complicated and saving the resources and time ? 
+
+for the pipeline_run_audit table (adf scenarios) table should we track row counts at each transformation stage (raw-> staging -> silver -> gold) separately or just capture start / end state ? 
+
+can we use stored procedures instead of data flows 
+
+
+generate EV charger data for a full day in your notebook, use a Python buffer to accumulate thirty minutes of records, flush that buffer to a JSON file in ADLS every thirty minutes, repeat until the day's done, then at the end fetch all those JSON files, combine them into one master dataframe, write that as a single JSON file, and then do your processing and analytics on it. 
+
+idea 2: 
+real time streaming using structured streaming 
+
+
+agar is idea ko maan lete hai toh next questions: 
+
+1. since we are simulating a streaming scenario using batch json flushes every 30 minuts should we design the raw table schema to include a batch_window_start and batch_window_wnd columns so downstream silver/gold queries can group by charging windows accurately ? 
+
+2. When we combine the 48 JSON files into a master dataframe at end of day, should that consolidation step be handled inside ADF using a Mapping Data Flow or outside via a Databricks/Python notebook activity 
+
+
+
+----- 
+
+are we supposed to store the data (each layer data) in both containers as well as tables ? 
+
+
+
+gold expectation tables: 
+
+1. gold_ev_exceptions -> This is the row-level store that PL_04's Conditional Split writes into directly. Every single flagged record lands here.
+2. gold_ev_exception_summary -> PL_04's Lookup_Exception_Rate activity queries this table, not the raw exceptions table. It's a daily rollup that PL_04 reads to decide whether to fire the Logic App alert. If we make PL_04 scan the full gold_ev_exceptions table every run, it will be slow as data grows. This summary table is what makes PL_04's monitoring query fast.
+3. gold_ev_fault_timeline  -> This is the fault-specific detail table. Even though faults also land in gold_ev_exceptions, you need this separate table because the Faults & Revenue Impact dashboard page (Page 04 ) needs fault-only rows with full financial context — MTTR, downtime, lost revenue, customers lost — without filtering through the entire exceptions table every time Power BI renders a visual.
+
+4. gold_ev_charger_exception_profile This is the per-charger health rollup. Page 06 Charger Diagnostics screenshot shows a "System Health" panel with per-component health scores and a flag for high-risk chargers. This table is what PL_04 populates so Power BI can show which chargers are most problematic without scanning row-level exceptions.
+
+4. gold_ev_packet_drop_gaps -> 	This is the only table that captures the 1% packet drop from data_gen.py. These rows don't exist in gold_ev_exceptions because there's nothing to flag — the record simply never arrived. The gap detection logic in your stored procedure generates one row per missing minute per charger by comparing expected timestamps against what actually exists in silver.

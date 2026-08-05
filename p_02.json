@@ -1,0 +1,161 @@
+{
+    "name": "PL_02_Raw_To_Staging",
+    "properties": {
+        "activities": [
+            {
+                "name": "DF_Raw_To_Staging",
+                "type": "ExecuteDataFlow",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "dataflow": {
+                        "referenceName": "dataflow1",
+                        "type": "DataFlowReference"
+                    },
+                    "compute": {
+                        "coreCount": 8,
+                        "computeType": "General"
+                    },
+                    "traceLevel": "Fine"
+                }
+            },
+            {
+                "name": "success_log",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "Validate_Staging_Row_Count",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "DECLARE @RowCount INT = @{activity('Validate_Staging_Row_Count').output.firstRow.RowCount};\n\nIF @RowCount = 0\nBEGIN\n    INSERT INTO dbo.pipeline_execution_logs\n    (PipelineName, RunID, EventStatus, Message, ExecutionTime,\n     DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\n    VALUES (\n        '@{pipeline().Pipeline}',\n        '@{pipeline().RunId}',\n        'Failed',\n        'Zero rows loaded into stg_ev_telemetry for @{pipeline().parameters.pipeline_date}. Check raw table.',\n        GETUTCDATE(),\n        CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n        0,\n        'raw_ev_telemetry',\n        'stg_ev_telemetry',\n        'Staging'\n    );\n    THROW 50001, 'Zero rows in staging. Pipeline failed intentionally.', 1;\nEND\n\nINSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Success',\n    'Staging load successful for @{pipeline().parameters.pipeline_date}. Rows loaded: @{activity('Validate_Staging_Row_Count').output.firstRow.RowCount}.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    @{activity('Validate_Staging_Row_Count').output.firstRow.RowCount},\n    'raw_ev_telemetry',\n    'stg_ev_telemetry',\n    'Staging'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "failure_log",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "DF_Raw_To_Staging",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    },
+                    {
+                        "activity": "Validate_Staging_Row_Count",
+                        "dependencyConditions": [
+                            "Failed",
+                            "Skipped"
+                        ]
+                    },
+                    {
+                        "activity": "success_log",
+                        "dependencyConditions": [
+                            "Failed",
+                            "Skipped"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Failed',\n    'PL_02 failed. Check ADF Monitor for Data Flow errors.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0,\n    'raw_ev_telemetry',\n    'stg_ev_telemetry',\n    'Staging'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Validate_Staging_Row_Count",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "DF_Raw_To_Staging",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": {
+                            "value": "SELECT COUNT(*) AS [RowCount] FROM dbo.stg_ev_telemetry",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_Sink_EV_SQL",
+                        "type": "DatasetReference"
+                    }
+                }
+            }
+        ],
+        "parameters": {
+            "pipeline_date": {
+                "type": "string",
+                "defaultValue": "@formatDateTime(adddays(utcnow(), -1), 'yyyy-MM-dd')"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-06-03T06:07:23Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}

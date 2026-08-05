@@ -1,0 +1,117 @@
+{
+    "name": "PL_07_Silver_To_Gold_KPIs",
+    "properties": {
+        "activities": [
+            {
+                "name": "SP_Load_Gold_KPIs",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "storedProcedureName": "[dbo].[usp_Load_Gold_EV_KPIs]",
+                    "storedProcedureParameters": {
+                        "pipeline_date": {
+                            "value": {
+                                "value": "@pipeline().parameters.pipeline_date",
+                                "type": "Expression"
+                            },
+                            "type": "DateTime"
+                        }
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "Log_Gold_KPI_Success",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "SP_Load_Gold_KPIs",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Success',\n    'Gold KPI load completed successfully for @{pipeline().parameters.pipeline_date}.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0,\n    'silver_ev_operations',\n    'gold_kpi_tables',\n    'Gold'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Gold_KPI_Failure",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "SP_Load_Gold_KPIs",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Failed',\n    'PL_07 failed for @{pipeline().parameters.pipeline_date}. Check ADF Monitor for stored procedure errors in usp_Load_Gold_EV_KPIs.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0,\n    'silver_ev_operations',\n    'gold_kpi_tables',\n    'Gold'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            }
+        ],
+        "parameters": {
+            "pipeline_date": {
+                "type": "string",
+                "defaultValue": "@formatDateTime(adddays(utcnow(), -1), 'yyyy-MM-dd')"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-06-03T07:07:10Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}

@@ -1,0 +1,220 @@
+{
+    "name": "PL_04_Exception_Handling",
+    "properties": {
+        "activities": [
+            {
+                "name": "Lookup_Exception_Rate",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": {
+                            "value": "SELECT\n    ISNULL(SUM(exception_row_count), 0)                                                          AS ExceptionCount,\n    ISNULL(SUM(CASE WHEN exception_severity = 'Critical' THEN exception_row_count ELSE 0 END), 0)  AS CriticalCount,\n    ISNULL(SUM(CASE WHEN exception_category = 'FAULT_STATE'    THEN exception_row_count ELSE 0 END), 0) AS FaultCount,\n    ISNULL(SUM(CASE WHEN exception_category = 'NULL_INJECTION' THEN exception_row_count ELSE 0 END), 0) AS NullCount,\n    ISNULL(SUM(total_lost_revenue_inr), 0)                                                          AS TotalLostRevenue,\n    ISNULL(MAX(pct_of_daily_rows), 0)                                                               AS MaxExceptionRate,\n    (SELECT COUNT(*) FROM dbo.raw_ev_telemetry\n     WHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}')                      AS RawCount\nFROM dbo.gold_ev_exception_summary\nWHERE data_date = '@{pipeline().parameters.pipeline_date}';",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_Sink_EV_SQL",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            },
+            {
+                "name": "Check_Exception_Threshold",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "Lookup_Exception_Rate",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "DECLARE @ExceptionCount  INT            = ISNULL(@{activity('Lookup_Exception_Rate').output.firstRow.ExceptionCount}, 0);\nDECLARE @CriticalCount   INT            = ISNULL(@{activity('Lookup_Exception_Rate').output.firstRow.CriticalCount}, 0);\nDECLARE @RawCount        INT            = ISNULL(@{activity('Lookup_Exception_Rate').output.firstRow.RawCount}, 0);\nDECLARE @MaxRate         DECIMAL(10,2)  = ISNULL(@{activity('Lookup_Exception_Rate').output.firstRow.MaxExceptionRate}, 0);\nDECLARE @TotalLostRev    DECIMAL(18,2)  = ISNULL(@{activity('Lookup_Exception_Rate').output.firstRow.TotalLostRevenue}, 0);\nDECLARE @Threshold       DECIMAL(10,2)  = 70.00;\nDECLARE @Breached        BIT            = CASE WHEN @MaxRate > @Threshold OR @CriticalCount > 0 THEN 1 ELSE 0 END;\n\n-- Log the check result regardless of pass/fail\nINSERT INTO dbo.dq_validation_results\n(PipelineName, RunID, TableName, CheckName, Status, FailedRowCount, ExecutionTime)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'gold_ev_exception_summary',\n    'Exception Rate <= 70% AND Zero Critical Faults',\n    CASE WHEN @Breached = 0 THEN 'Passed' ELSE 'Failed' END,\n    @ExceptionCount,\n    GETUTCDATE()\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Exception_OK",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "Check_Exception_Threshold",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Success',\n    'Exception check PASSED for @{pipeline().parameters.pipeline_date}. Max exception rate: @{activity('Lookup_Exception_Rate').output.firstRow.MaxExceptionRate}%, Critical faults: @{activity('Lookup_Exception_Rate').output.firstRow.CriticalCount}, Total exceptions: @{activity('Lookup_Exception_Rate').output.firstRow.ExceptionCount} of @{activity('Lookup_Exception_Rate').output.firstRow.RawCount} raw rows. Threshold (70%) not breached.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    @{activity('Lookup_Exception_Rate').output.firstRow.ExceptionCount},\n    'raw_ev_telemetry',\n    'gold_ev_exceptions',\n    'Exception-Check'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Exception_Breach",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "Check_Exception_Threshold",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Failed',\n    'EXCEPTION THRESHOLD BREACHED for @{pipeline().parameters.pipeline_date}. Max exception rate: @{activity('Lookup_Exception_Rate').output.firstRow.MaxExceptionRate}%, Critical faults: @{activity('Lookup_Exception_Rate').output.firstRow.CriticalCount}, Fault rows: @{activity('Lookup_Exception_Rate').output.firstRow.FaultCount}, NULL rows: @{activity('Lookup_Exception_Rate').output.firstRow.NullCount}, Total exceptions: @{activity('Lookup_Exception_Rate').output.firstRow.ExceptionCount} of @{activity('Lookup_Exception_Rate').output.firstRow.RawCount} raw rows.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    @{activity('Lookup_Exception_Rate').output.firstRow.ExceptionCount},\n    'raw_ev_telemetry',\n    'gold_ev_exceptions',\n    'Exception-Check'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Send_Exception_Alert",
+                "type": "WebActivity",
+                "dependsOn": [
+                    {
+                        "activity": "Log_Exception_Breach",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "url": "https://prod-26.centralindia.logic.azure.com:443/workflows/c7e1a79126c641758cc0b796f278bcfe/triggers/When_an_HTTP_request_is_received/paths/invoke?api-version=2016-10-01&sp=%2Ftriggers%2FWhen_an_HTTP_request_is_received%2Frun&sv=1.0&sig=4w3bsRUKyD5pmmP4aQbzzXqsdkhIX62Gkn-ssb7SyYU",
+                    "body": {
+                        "value": "{\n    \"pipelineName\": \"@{pipeline().Pipeline}\",\n    \"runId\": \"@{pipeline().RunId}\",\n    \"pipelineDate\": \"@{pipeline().parameters.pipeline_date}\",\n    \"status\": \"FAILED\",\n    \"exceptionCount\": \"@{activity('Lookup_Exception_Rate').output.firstRow.ExceptionCount}\",\n    \"criticalCount\": \"@{activity('Lookup_Exception_Rate').output.firstRow.CriticalCount}\",\n    \"faultCount\": \"@{activity('Lookup_Exception_Rate').output.firstRow.FaultCount}\",\n    \"nullCount\": \"@{activity('Lookup_Exception_Rate').output.firstRow.NullCount}\",\n    \"maxExceptionRate\": \"@{activity('Lookup_Exception_Rate').output.firstRow.MaxExceptionRate}%\",\n    \"totalLostRevenue\": \"INR @{activity('Lookup_Exception_Rate').output.firstRow.TotalLostRevenue}\",\n    \"message\": \"PL_04 threshold breached for @{pipeline().parameters.pipeline_date}. Max exception rate: @{activity('Lookup_Exception_Rate').output.firstRow.MaxExceptionRate}%, Critical faults: @{activity('Lookup_Exception_Rate').output.firstRow.CriticalCount}, Total exceptions: @{activity('Lookup_Exception_Rate').output.firstRow.ExceptionCount} of @{activity('Lookup_Exception_Rate').output.firstRow.RawCount} rows. Check gold_ev_exception_summary and gold_ev_fault_timeline.\",\n    \"timestamp\": \"@{utcnow()}\"\n}",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Log_Lookup_Failure",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "Lookup_Exception_Rate",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Failed',\n    'PL_04 failed during exception rate lookup for @{pipeline().parameters.pipeline_date}. Check ADF Monitor for SQL errors.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0,\n    'gold_ev_exceptions',\n    'pipeline_execution_logs',\n    'Exception-Check'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            }
+        ],
+        "parameters": {
+            "pipeline_date": {
+                "type": "string",
+                "defaultValue": "@formatDateTime(adddays(utcnow(), -1), 'yyyy-MM-dd')"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-05-27T07:33:07Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}

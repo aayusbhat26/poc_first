@@ -1,0 +1,255 @@
+%%{init: {
+  'theme': 'base',
+  'flowchart': {
+    'nodeSpacing': 20,
+    'rankSpacing': 25,
+    'curve': 'basis',
+    'padding': 5
+  },
+  'themeVariables': {
+    'background': '#0f172a',
+    'primaryColor': '#1e293b',
+    'primaryTextColor': '#ffffff',
+    'primaryBorderColor': '#60a5fa',
+    'lineColor': '#94a3b8',
+    'secondaryColor': '#1e293b',
+    'tertiaryColor': '#0f172a',
+    'edgeLabelBackground': '#1e293b',
+    'clusterBkg': '#111827',
+    'clusterBorder': '#60a5fa',
+    'titleColor': '#ffffff',
+    'nodeTextColor': '#ffffff'
+  }
+}}%%
+
+flowchart TD
+
+classDef orchestrator fill:#1f2937,stroke:#f59e0b,stroke-width:3px,color:#fff
+classDef pipeline fill:#0078D4,stroke:#60a5fa,stroke-width:2px,color:#fff
+classDef databricks fill:#e25822,stroke:#ff8c00,stroke-width:2px,color:#fff
+classDef storage fill:#0d9488,stroke:#5eead4,stroke-width:2px,color:#fff
+classDef table fill:#0369a1,stroke:#38bdf8,stroke-width:2px,color:#fff
+classDef audit fill:#dc2626,stroke:#fca5a5,stroke-width:2px,color:#fff
+classDef pbi fill:#F2C811,stroke:#fbbf24,stroke-width:2px,color:#000
+classDef incremental fill:#7c3aed,stroke:#c4b5fd,stroke-width:2px,color:#fff
+classDef monitoring fill:#475569,stroke:#94a3b8,stroke-width:2px,color:#fff
+classDef halt fill:#7f1d1d,stroke:#fca5a5,stroke-width:2px,color:#fff
+classDef condition fill:#854d0e,stroke:#fbbf24,stroke-width:2px,color:#fff
+
+%% ─────────────────────────────────────────
+%% 1. MASTER ORCHESTRATION
+%% ─────────────────────────────────────────
+subgraph ORCH ["Master Orchestration"]
+    Master["PL_09_Master_Orchestration"]
+end
+
+%% ─────────────────────────────────────────
+%% 2. PL_01 – RAW INGESTION
+%% ─────────────────────────────────────────
+subgraph PL01 ["PL_01_Raw_Ingestion"]
+    direction TB
+
+    CHK{"Check Max Timestamp<br/>in raw_ev_telemetry"}
+    COND{"If MaxDate<br/>= Yesterday?"}
+    SKIP["Skip — Data Already Exists"]
+
+    DBR["Databricks Notebook<br/>data_generation_previous_day"]
+
+    ADLS_JSON["ADLS Gen2 Landing Zone<br/>*.jsonl"]
+
+    CP["Copy Activity<br/>Landing → Raw"]
+
+    LOG1_S["Log Success"]
+    LOG1_F["Log Failure"]
+
+    CHK --> COND
+    COND -->|"Already loaded"| SKIP
+    COND -->|"Missing data"| DBR
+    DBR --> ADLS_JSON
+    ADLS_JSON --> CP
+    CP --> LOG1_S
+    CP --> LOG1_F
+end
+
+%% ─────────────────────────────────────────
+%% 3. PL_02 – RAW TO STAGING
+%% ─────────────────────────────────────────
+subgraph PL02 ["PL_02_Raw_To_Staging"]
+    direction TB
+
+    DF2["Mapping Data Flow<br/>Raw → Staging"]
+
+    LOG2_S["Log Success"]
+    LOG2_F["Log Failure"]
+
+    DF2 --> LOG2_S
+    DF2 --> LOG2_F
+end
+
+%% ─────────────────────────────────────────
+%% 4. DATA QUALITY
+%% ─────────────────────────────────────────
+subgraph PL03 ["PL_03_Data_Quality_Checks"]
+    direction TB
+
+    DQ_FLOW["DQ Validation Flow"]
+
+    DQ_PASS["Valid Rows"]
+    DQ_FAIL["Invalid Rows"]
+
+    LOG3["Log DQ Results"]
+
+    DQ_FLOW --> DQ_PASS
+    DQ_FLOW --> DQ_FAIL
+
+    DQ_PASS --> LOG3
+    DQ_FAIL --> LOG3
+end
+
+%% ─────────────────────────────────────────
+%% 5. EXCEPTION HANDLING
+%% ─────────────────────────────────────────
+subgraph PL04 ["PL_04_Exception_Handling"]
+    direction TB
+
+    EXC_FLOW["Exception Enrichment"]
+
+    EXC_SINK["gold_ev_exceptions"]
+
+    LOG4["Log Exception Count"]
+
+    EXC_FLOW --> EXC_SINK
+    EXC_SINK --> LOG4
+end
+
+%% ─────────────────────────────────────────
+%% 6. SILVER LOAD
+%% ─────────────────────────────────────────
+subgraph PL05 ["PL_05_Staging_To_Silver"]
+    direction TB
+
+    SILV_FLOW["Business Logic + Transformations"]
+
+    LOG5["Log RowCount"]
+
+    SILV_FLOW --> LOG5
+end
+
+%% ─────────────────────────────────────────
+%% 7. GOLD KPI LOAD
+%% ─────────────────────────────────────────
+subgraph PL06 ["PL_06_KPI_Gold_Load"]
+    direction TB
+
+    GOLD_SP["Stored Procedure<br/>KPI Aggregations"]
+
+    LOG6["Log Status"]
+
+    GOLD_SP --> LOG6
+end
+
+%% ─────────────────────────────────────────
+%% 8. DASHBOARD REFRESH
+%% ─────────────────────────────────────────
+subgraph PL07 ["PL_07_Dashboard_Refresh"]
+    direction TB
+
+    PBI_API["Power BI Refresh"]
+
+    LOG7["Log Refresh"]
+
+    PBI_API --> LOG7
+end
+
+%% ─────────────────────────────────────────
+%% 9. INCREMENTAL LOAD
+%% ─────────────────────────────────────────
+subgraph PL08 ["PL_08_Incremental_Load"]
+    direction TB
+
+    WM_LOOKUP["Lookup Watermark"]
+
+    DBR_DELTA["Delta Generation Notebook"]
+
+    ADLS_DELTA["Delta JSON Files"]
+
+    CP_DELTA["Copy Delta Rows"]
+
+    WM_UPDATE["Update Watermark"]
+
+    WM_LOOKUP --> DBR_DELTA
+    DBR_DELTA --> ADLS_DELTA
+    ADLS_DELTA --> CP_DELTA
+    CP_DELTA --> WM_UPDATE
+end
+
+%% ─────────────────────────────────────────
+%% 10. MONITORING
+%% ─────────────────────────────────────────
+subgraph PL10 ["PL_10_Pipeline_Monitoring"]
+    direction TB
+
+    MON_SCRIPT["Monitor Logs + Alerts"]
+end
+
+%% ─────────────────────────────────────────
+%% DATA STORES
+%% ─────────────────────────────────────────
+subgraph STORES ["Azure SQL Data Stores"]
+    direction LR
+
+    RAW_TBL[("raw_ev_telemetry")]
+    STG_TBL[("stg_ev_telemetry")]
+    SILV_TBL[("silver_ev_telemetry")]
+    GOLD_TBL[("gold_ev_kpi")]
+    EXC_TBL[("gold_ev_exceptions")]
+    DQ_TBL[("dq_validation_results")]
+    LOG_TBL[("pipeline_execution_logs")]
+    WM_TBL[("watermark_table")]
+end
+
+%% POWER BI
+DASH["Power BI Dashboard"]
+
+%% ORCHESTRATION
+Master ==> PL01
+PL08 -.-> PL02
+
+PL01 --> PL02
+PL02 --> PL03
+PL03 --> PL04
+PL04 --> PL05
+PL05 --> PL06
+PL06 --> PL07
+
+%% DATA LINKS
+CP -.-> RAW_TBL
+CP_DELTA -.-> RAW_TBL
+DF2 -.-> STG_TBL
+DQ_FAIL -.-> EXC_TBL
+SILV_FLOW -.-> SILV_TBL
+GOLD_SP -.-> GOLD_TBL
+WM_LOOKUP -.-> WM_TBL
+WM_UPDATE -.-> WM_TBL
+
+%% MONITORING
+PL10 ==> LOG_TBL
+
+%% DASHBOARD LINKS
+GOLD_TBL ==> DASH
+SILV_TBL ==> DASH
+EXC_TBL ==> DASH
+DQ_TBL ==> DASH
+LOG_TBL ==> DASH
+
+%% APPLY STYLES
+class Master orchestrator
+class PL01,PL02,PL03,PL04,PL05,PL06,PL07 pipeline
+class PL08 incremental
+class PL10 monitoring
+class DBR,DBR_DELTA databricks
+class ADLS_JSON,ADLS_DELTA storage
+class RAW_TBL,STG_TBL,SILV_TBL,GOLD_TBL,EXC_TBL,WM_TBL table
+class DQ_TBL,LOG_TBL audit
+class DASH pbi
+class COND,CHK condition

@@ -1,0 +1,109 @@
+{
+    "name": "PL_08_Dashboard_Refresh",
+    "properties": {
+        "activities": [
+            {
+                "name": "Trigger_PowerBI_Refresh",
+                "type": "WebActivity",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "method": "POST",
+                    "url": "https://prod-29.centralindia.logic.azure.com:443/workflows/9d77512341c249b092784a016076fed3/triggers/When_an_HTTP_request_is_received/paths/invoke?api-version=2016-10-01&sp=%2Ftriggers%2FWhen_an_HTTP_request_is_received%2Frun&sv=1.0&sig=3A65mzsK0pqTsvhXmTeZ3V83XWbyJjsbmx_b1ytppGY"
+                }
+            },
+            {
+                "name": "Log_Refresh_Success",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "Trigger_PowerBI_Refresh",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}', '@{pipeline().RunId}', 'Success',\n    'Power BI Dataset refresh triggered successfully via Power Automate Webhook.',\n    GETUTCDATE(), CAST(GETUTCDATE() AS DATE), 0, 'gold_kpi_tables', 'power_bi_dataset', 'Reporting'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Log_Refresh_Failure",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "Trigger_PowerBI_Refresh",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}', '@{pipeline().RunId}', 'Failed',\n    'Failed to trigger Power BI refresh. Verify the Power Automate Webhook URL and flow status.',\n    GETUTCDATE(), CAST(GETUTCDATE() AS DATE), 0, 'gold_kpi_tables', 'power_bi_dataset', 'Reporting'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            }
+        ],
+        "parameters": {
+            "WorkspaceID": {
+                "type": "string",
+                "defaultValue": "a68c960b-5a4f-424b-bb8b-6bb84d02892c"
+            },
+            "DatasetID": {
+                "type": "string",
+                "defaultValue": "96777cff-12da-4de0-9e2a-866a42a51d4d"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-06-04T16:05:47Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}

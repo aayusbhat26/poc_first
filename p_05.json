@@ -1,0 +1,165 @@
+{
+    "name": "PL_05_Staging_To_Silver",
+    "properties": {
+        "activities": [
+            {
+                "name": "SP_Load_Silver",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "storedProcedureName": "[dbo].[usp_Load_Silver_EV_Operations]",
+                    "storedProcedureParameters": {
+                        "pipeline_date": {
+                            "value": {
+                                "value": "@{pipeline().parameters.pipeline_date}",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "Lookup_Silver_Row_Count",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "SP_Load_Silver",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": {
+                            "value": "SELECT COUNT(*) AS RowsWritten\nFROM dbo.silver_ev_operations\nWHERE CAST(timestamp AS DATE) = '@{pipeline().parameters.pipeline_date}';",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_Sink_EV_SQL",
+                        "type": "DatasetReference"
+                    }
+                }
+            },
+            {
+                "name": "success_log",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "Lookup_Silver_Row_Count",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "DECLARE @RowCount INT = @{activity('Lookup_Silver_Row_Count').output.firstRow.RowsWritten};\n\nIF @RowCount = 0\nBEGIN\n    INSERT INTO dbo.pipeline_execution_logs\n    (PipelineName, RunID, EventStatus, Message, ExecutionTime,\n     DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\n    VALUES (\n        '@{pipeline().Pipeline}',\n        '@{pipeline().RunId}',\n        'Failed',\n        'Zero rows loaded into silver_ev_operations for @{pipeline().parameters.pipeline_date}. Check stg_ev_telemetry.',\n        GETUTCDATE(),\n        CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n        0,\n        'stg_ev_telemetry',\n        'silver_ev_operations',\n        'Silver'\n    );\n    THROW 50001, 'Zero rows in silver. Pipeline failed intentionally.', 1;\nEND\n\nINSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Success',\n    'Silver load successful for @{pipeline().parameters.pipeline_date}. Rows written: @{activity('Lookup_Silver_Row_Count').output.firstRow.RowsWritten}.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    @{activity('Lookup_Silver_Row_Count').output.firstRow.RowsWritten},\n    'stg_ev_telemetry',\n    'silver_ev_operations',\n    'Silver'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "failure_log",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "SP_Load_Silver",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    },
+                    {
+                        "activity": "Lookup_Silver_Row_Count",
+                        "dependencyConditions": [
+                            "Failed",
+                            "Skipped"
+                        ]
+                    },
+                    {
+                        "activity": "success_log",
+                        "dependencyConditions": [
+                            "Failed",
+                            "Skipped"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "LS_AzureSQL",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": {
+                                "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime,\n DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Failed',\n    'PL_05 failed for @{pipeline().parameters.pipeline_date}. Check ADF Monitor for stored procedure errors.',\n    GETUTCDATE(),\n    CAST('@{pipeline().parameters.pipeline_date}' AS DATE),\n    0,\n    'stg_ev_telemetry',\n    'silver_ev_operations',\n    'Silver'\n);",
+                                "type": "Expression"
+                            }
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            }
+        ],
+        "parameters": {
+            "pipeline_date": {
+                "type": "string"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-06-03T14:46:10Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}

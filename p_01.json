@@ -1,0 +1,801 @@
+{
+    "name": "PL_01_Raw_Ingestion",
+    "properties": {
+        "activities": [
+            {
+                "name": "Set_Pipeline_Date",
+                "type": "SetVariable",
+                "dependsOn": [],
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "v_pipeline_date",
+                    "value": {
+                        "value": "@if(equals(pipeline().parameters.pipeline_date, ''), formatDateTime(adddays(utcnow(), -1), 'yyyy-MM-dd'), pipeline().parameters.pipeline_date)",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Check Max Timestamp",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "Set_Pipeline_Date",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": {
+                            "value": "SELECT COUNT(*) AS ExistingCount\nFROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{variables('v_pipeline_date')}';",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_Sink_EV_SQL",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            },
+            {
+                "name": "If Condition1",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "Check Max Timestamp",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@greater(activity('Check Max Timestamp').output.firstRow.ExistingCount, 0)",
+                        "type": "Expression"
+                    },
+                    "ifFalseActivities": [
+                        {
+                            "name": "Check_ADLS_File_Exists",
+                            "type": "GetMetadata",
+                            "state": "Inactive",
+                            "onInactiveMarkAs": "Succeeded",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "dataset": {
+                                    "referenceName": "DS_Source_EV_JSON",
+                                    "type": "DatasetReference"
+                                },
+                                "fieldList": [
+                                    "childItems"
+                                ],
+                                "storeSettings": {
+                                    "type": "AzureBlobFSReadSettings",
+                                    "recursive": false,
+                                    "wildcardFolderPath": {
+                                        "value": "ev_telemetry/@{replace(variables('v_pipeline_date'), '-', '')}",
+                                        "type": "Expression"
+                                    },
+                                    "enablePartitionDiscovery": false
+                                },
+                                "formatSettings": {
+                                    "type": "JsonReadSettings"
+                                }
+                            }
+                        },
+                        {
+                            "name": "Generate_EV_Telemetry",
+                            "type": "DatabricksNotebook",
+                            "state": "Inactive",
+                            "dependsOn": [
+                                {
+                                    "activity": "Check_ADLS_File_Exists",
+                                    "dependencyConditions": [
+                                        "Succeeded",
+                                        "Failed"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "notebookPath": "/Users/work.aayush.bhat@gmail.com/data_generation_previous_day",
+                                "baseParameters": {
+                                    "pipeline_date": {
+                                        "value": "@variables('v_pipeline_date')",
+                                        "type": "Expression"
+                                    }
+                                }
+                            },
+                            "linkedServiceName": {
+                                "referenceName": "AzureDatabricks1",
+                                "type": "LinkedServiceReference"
+                            },
+                            "runIf": {
+                                "value": "@or(equals(activity('Check_ADLS_File_Exists').status, 'Failed'), equals(length(activity('Check_ADLS_File_Exists').output.childItems), 0))",
+                                "type": "Expression"
+                            }
+                        },
+                        {
+                            "name": "CP_ACT_LANDING_TO_RAW",
+                            "type": "Copy",
+                            "dependsOn": [
+                                {
+                                    "activity": "Generate_EV_Telemetry",
+                                    "dependencyConditions": [
+                                        "Succeeded",
+                                        "Skipped"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "JsonSource",
+                                    "additionalColumns": [
+                                        {
+                                            "name": "source_file_name",
+                                            "value": "$$FILEPATH"
+                                        }
+                                    ],
+                                    "storeSettings": {
+                                        "type": "AzureBlobFSReadSettings",
+                                        "recursive": true,
+                                        "wildcardFolderPath": {
+                                            "value": "ev_telemetry/@{replace(variables('v_pipeline_date'), '-', '')}",
+                                            "type": "Expression"
+                                        },
+                                        "wildcardFileName": "*.jsonl.gz",
+                                        "enablePartitionDiscovery": false
+                                    },
+                                    "formatSettings": {
+                                        "type": "JsonReadSettings"
+                                    }
+                                },
+                                "sink": {
+                                    "type": "AzureSqlSink",
+                                    "writeBehavior": "insert",
+                                    "sqlWriterUseTableLock": false
+                                },
+                                "enableStaging": false,
+                                "translator": {
+                                    "type": "TabularTranslator",
+                                    "mappings": [
+                                        {
+                                            "source": {
+                                                "path": "$['charger_id']"
+                                            },
+                                            "sink": {
+                                                "name": "charger_id",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['timestamp']"
+                                            },
+                                            "sink": {
+                                                "name": "timestamp",
+                                                "type": "DateTime"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['state']"
+                                            },
+                                            "sink": {
+                                                "name": "state",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['city']"
+                                            },
+                                            "sink": {
+                                                "name": "city",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['zone']"
+                                            },
+                                            "sink": {
+                                                "name": "zone",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['site_type']"
+                                            },
+                                            "sink": {
+                                                "name": "site_type",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['hw_type']"
+                                            },
+                                            "sink": {
+                                                "name": "hw_type",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['charger_type_category']"
+                                            },
+                                            "sink": {
+                                                "name": "charger_type_category",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['max_power_kw']"
+                                            },
+                                            "sink": {
+                                                "name": "max_power_kw",
+                                                "type": "Int32"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['status']"
+                                            },
+                                            "sink": {
+                                                "name": "status",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['is_online']"
+                                            },
+                                            "sink": {
+                                                "name": "is_online",
+                                                "type": "Boolean"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['uptime_pct']"
+                                            },
+                                            "sink": {
+                                                "name": "uptime_pct",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['user_id']"
+                                            },
+                                            "sink": {
+                                                "name": "user_id",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['session_duration_mins']"
+                                            },
+                                            "sink": {
+                                                "name": "session_duration_mins",
+                                                "type": "Int32"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['session_dur_bucket']"
+                                            },
+                                            "sink": {
+                                                "name": "session_dur_bucket",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['utilisation_pct']"
+                                            },
+                                            "sink": {
+                                                "name": "utilisation_pct",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['time_of_day_band']"
+                                            },
+                                            "sink": {
+                                                "name": "time_of_day_band",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['total_active_power_kw']"
+                                            },
+                                            "sink": {
+                                                "name": "total_active_power_kw",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['voltage_phase_a_v']"
+                                            },
+                                            "sink": {
+                                                "name": "voltage_phase_a_v",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['voltage_phase_b_v']"
+                                            },
+                                            "sink": {
+                                                "name": "voltage_phase_b_v",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['voltage_phase_c_v']"
+                                            },
+                                            "sink": {
+                                                "name": "voltage_phase_c_v",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['current_phase_a_a']"
+                                            },
+                                            "sink": {
+                                                "name": "current_phase_a_a",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['current_phase_b_a']"
+                                            },
+                                            "sink": {
+                                                "name": "current_phase_b_a",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['current_phase_c_a']"
+                                            },
+                                            "sink": {
+                                                "name": "current_phase_c_a",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['connector_temp_c']"
+                                            },
+                                            "sink": {
+                                                "name": "connector_temp_c",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['ambient_temp_c']"
+                                            },
+                                            "sink": {
+                                                "name": "ambient_temp_c",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['energy_delivered_kwh']"
+                                            },
+                                            "sink": {
+                                                "name": "energy_delivered_kwh",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['session_revenue_inr']"
+                                            },
+                                            "sink": {
+                                                "name": "session_revenue_inr",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['electricity_cost_inr']"
+                                            },
+                                            "sink": {
+                                                "name": "electricity_cost_inr",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['maintenance_cost_inr']"
+                                            },
+                                            "sink": {
+                                                "name": "maintenance_cost_inr",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['connectivity_cost_inr']"
+                                            },
+                                            "sink": {
+                                                "name": "connectivity_cost_inr",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['staff_cost_inr']"
+                                            },
+                                            "sink": {
+                                                "name": "staff_cost_inr",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['net_margin_inr']"
+                                            },
+                                            "sink": {
+                                                "name": "net_margin_inr",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['lost_revenue_inr']"
+                                            },
+                                            "sink": {
+                                                "name": "lost_revenue_inr",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['initial_soc_pct']"
+                                            },
+                                            "sink": {
+                                                "name": "initial_soc_pct",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['current_soc_pct']"
+                                            },
+                                            "sink": {
+                                                "name": "current_soc_pct",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['target_soc_pct']"
+                                            },
+                                            "sink": {
+                                                "name": "target_soc_pct",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['error_code']"
+                                            },
+                                            "sink": {
+                                                "name": "error_code",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['fault_severity']"
+                                            },
+                                            "sink": {
+                                                "name": "fault_severity",
+                                                "type": "String"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['is_faulted']"
+                                            },
+                                            "sink": {
+                                                "name": "is_faulted",
+                                                "type": "Boolean"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['repeat_fault']"
+                                            },
+                                            "sink": {
+                                                "name": "repeat_fault",
+                                                "type": "Boolean"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['mttr_estimate_mins']"
+                                            },
+                                            "sink": {
+                                                "name": "mttr_estimate_mins",
+                                                "type": "Int32"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['downtime_mins_today']"
+                                            },
+                                            "sink": {
+                                                "name": "downtime_mins_today",
+                                                "type": "Int32"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['customers_lost']"
+                                            },
+                                            "sink": {
+                                                "name": "customers_lost",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['fault_lost_revenue_inr']"
+                                            },
+                                            "sink": {
+                                                "name": "fault_lost_revenue_inr",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['zone_score']"
+                                            },
+                                            "sink": {
+                                                "name": "zone_score",
+                                                "type": "Decimal"
+                                            }
+                                        },
+                                        {
+                                            "source": {
+                                                "path": "$['peak_hour']"
+                                            },
+                                            "sink": {
+                                                "name": "peak_hour",
+                                                "type": "Boolean"
+                                            }
+                                        }
+                                    ],
+                                    "collectionReference": "",
+                                    "mapComplexValuesToString": true
+                                }
+                            },
+                            "inputs": [
+                                {
+                                    "referenceName": "DS_Source_EV_JSON",
+                                    "type": "DatasetReference"
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "referenceName": "DS_Sink_EV_SQL",
+                                    "type": "DatasetReference"
+                                }
+                            ]
+                        },
+                        {
+                            "name": "Lookup_Row_Count",
+                            "type": "Lookup",
+                            "dependsOn": [
+                                {
+                                    "activity": "CP_ACT_LANDING_TO_RAW",
+                                    "dependencyConditions": [
+                                        "Completed"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "AzureSqlSource",
+                                    "sqlReaderQuery": {
+                                        "value": "SELECT COUNT(*) AS row_cnt\nFROM dbo.raw_ev_telemetry\nWHERE CAST(timestamp AS DATE) = '@{variables('v_pipeline_date')}'",
+                                        "type": "Expression"
+                                    },
+                                    "queryTimeout": "02:00:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_Sink_EV_SQL",
+                                    "type": "DatasetReference"
+                                }
+                            }
+                        },
+                        {
+                            "name": "Log_Successful_Execution",
+                            "type": "Script",
+                            "dependsOn": [
+                                {
+                                    "activity": "Lookup_Row_Count",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "linkedServiceName": {
+                                "referenceName": "LS_AzureSQL",
+                                "type": "LinkedServiceReference"
+                            },
+                            "typeProperties": {
+                                "scripts": [
+                                    {
+                                        "type": "Query",
+                                        "text": {
+                                            "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Success',\n    'Raw ingestion completed for @{variables('v_pipeline_date')}. Rows loaded: @{activity('Lookup_Row_Count').output.firstRow.row_cnt}.',\n    GETUTCDATE(),\n    CAST('@{variables('v_pipeline_date')}' AS DATE),\n    @{activity('Lookup_Row_Count').output.firstRow.row_cnt},\n    'ADLS_Landing',\n    'raw_ev_telemetry',\n    'Raw'\n);",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                ],
+                                "scriptBlockExecutionTimeout": "02:00:00"
+                            }
+                        },
+                        {
+                            "name": "Log_Failure_Execution",
+                            "type": "Script",
+                            "dependsOn": [
+                                {
+                                    "activity": "CP_ACT_LANDING_TO_RAW",
+                                    "dependencyConditions": [
+                                        "Failed",
+                                        "Skipped"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "linkedServiceName": {
+                                "referenceName": "LS_AzureSQL",
+                                "type": "LinkedServiceReference"
+                            },
+                            "typeProperties": {
+                                "scripts": [
+                                    {
+                                        "type": "Query",
+                                        "text": {
+                                            "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Failed',\n    'PL_01 copy activity failed or was skipped for @{variables('v_pipeline_date')}. Check ADF Monitor.',\n    GETUTCDATE(),\n    CAST('@{variables('v_pipeline_date')}' AS DATE),\n    0,\n    'ADLS_Landing',\n    'raw_ev_telemetry',\n    'Raw'\n);",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                ],
+                                "scriptBlockExecutionTimeout": "02:00:00"
+                            }
+                        }
+                    ],
+                    "ifTrueActivities": [
+                        {
+                            "name": "Log_Skipped_Execution",
+                            "type": "Script",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "linkedServiceName": {
+                                "referenceName": "LS_AzureSQL",
+                                "type": "LinkedServiceReference"
+                            },
+                            "typeProperties": {
+                                "scripts": [
+                                    {
+                                        "type": "Query",
+                                        "text": {
+                                            "value": "INSERT INTO dbo.pipeline_execution_logs\n(PipelineName, RunID, EventStatus, Message, ExecutionTime, DataDate, RowsWritten, SourceTable, TargetTable, PipelineStage)\nVALUES (\n    '@{pipeline().Pipeline}',\n    '@{pipeline().RunId}',\n    'Skipped',\n    'Data already exists for @{variables('v_pipeline_date')}. Pipeline skipped.',\n    GETUTCDATE(),\n    CAST('@{variables('v_pipeline_date')}' AS DATE),\n    0,\n    'ADLS_Landing',\n    'raw_ev_telemetry',\n    'Raw'\n);",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                ],
+                                "scriptBlockExecutionTimeout": "02:00:00"
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+        "parameters": {
+            "pipeline_date": {
+                "type": "string"
+            }
+        },
+        "variables": {
+            "v_pipeline_date": {
+                "type": "String"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-06-03T16:49:06Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}
